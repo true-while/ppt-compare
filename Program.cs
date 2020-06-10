@@ -12,6 +12,9 @@ using System.Xml;
 using static PPT_Compare.StatData;
 using System.Collections;
 using DocumentFormat.OpenXml.Bibliography;
+using System.Text.RegularExpressions;
+using System.Configuration;
+using DocumentFormat.OpenXml;
 
 namespace PPT_Compare
 {
@@ -32,7 +35,6 @@ namespace PPT_Compare
     class Program
     {
         private static List<StatData> stat = new List<StatData>();
-
         static void Main(string[] arg)
         {
 
@@ -184,11 +186,14 @@ example for files:
             var modifiedText = GetTextOnSlides(ModfileNamePath);
             var originalText = GetTextOnSlides(OrgfileNamePath);
 
+            var modifiedNote = GetNoteOnSlides(ModfileNamePath);
+            var originalNote = GetNoteOnSlides(OrgfileNamePath);
+
             var modifiedImg = GetImagesOnSlides(ModfileNamePath);
             var originalImg = GetImagesOnSlides(OrgfileNamePath);
 
-            File.WriteAllText(Path.Combine(Path.GetDirectoryName(ModfileNamePath), Path.GetFileNameWithoutExtension(ModfileNamePath) +  ".json"), JsonConvert.SerializeObject(new[] { modifiedText, modifiedImg }, Newtonsoft.Json.Formatting.Indented));
-            File.WriteAllText(Path.Combine(Path.GetDirectoryName(OrgfileNamePath), Path.GetFileNameWithoutExtension(OrgfileNamePath) + ".json"), JsonConvert.SerializeObject(new[] { originalText, originalImg }, Newtonsoft.Json.Formatting.Indented));
+            File.WriteAllText(Path.Combine(Path.GetDirectoryName(ModfileNamePath), Path.GetFileNameWithoutExtension(ModfileNamePath) +  ".json"), JsonConvert.SerializeObject(new { text = modifiedText, images = modifiedImg, notes = modifiedNote }, Newtonsoft.Json.Formatting.Indented));
+            File.WriteAllText(Path.Combine(Path.GetDirectoryName(OrgfileNamePath), Path.GetFileNameWithoutExtension(OrgfileNamePath) + ".json"), JsonConvert.SerializeObject(new { text = originalText, images = originalImg, notes = originalNote }, Newtonsoft.Json.Formatting.Indented));
 
             sData.Slides = new SlideState[(modifiedText.Keys.Count > originalText.Keys.Count ? modifiedText.Keys.Count : originalText.Keys.Count )+ 1];
 
@@ -202,15 +207,32 @@ example for files:
                     var sMod = modifiedText[sID];
                     var sOrg = originalText[sID];
 
+                    var nMod = modifiedNote[sID];
+                    var nOrg = originalNote[sID];
 
                     var bModified = false;
                     var iModified = false;
+                    var nModified = false;
 
                     for (int l = 0; l < sMod.Length; l++)
                     {
                         if (sOrg.Length < (l + 1) || sMod[l].ToLower() != sOrg[l].ToLower())
                         {
                             bModified = true;
+                        }
+                    }
+
+                    for (int l = 0; l < nMod.Length; l++)
+                    {
+                        if (nOrg.Length < (l + 1))
+                        {
+                            nModified = true;
+                            break;
+                        }
+                        // if the data contains exact data format it seems to come from the edit data. lets ignore that. 
+                        if (nMod[l].ToLower() != nOrg[l].ToLower())
+                        {
+                            nModified = true; 
                         }
                     }
 
@@ -229,13 +251,22 @@ example for files:
 
                     }
 
-                    if (bModified || iModified)
+                    if (bModified || iModified || nModified)
                     {
                         sData.Slides[i] = StatData.SlideState.Updated;
                         Console.ForegroundColor = ConsoleColor.Yellow;
-                        Console.WriteLine($"\tSlide #{i} {(bModified && iModified ? "text and pictures" : (bModified ? "text" : "pictures"))} modified");
+                        List<string> arr = new List<string>();
+                        arr.Add($"\tSlide #{i}");
+                        if (bModified)
+                            arr.Add("text modified");
+                        if (iModified)
+                            arr.Add("pictures modified");
+                        if (nModified)
+                            arr.Add("notes modified");
+                        Console.WriteLine(string.Join(", ", arr));
                         Console.ForegroundColor = ConsoleColor.White;
-                    }else
+                    }
+                    else
                     {
                         sData.Slides[i] = StatData.SlideState.NotModified;
                     }
@@ -265,6 +296,60 @@ example for files:
 
             }
         }
+
+         private static Dictionary<uint, string[]> GetNoteOnSlides(string presentationFile)
+        {
+            var slides = new Dictionary<uint, string[]>();
+            try
+            {
+                using (PresentationDocument presentationDocument = PresentationDocument.Open(presentationFile, false))
+                {
+
+                    PresentationPart presentationPart = presentationDocument.PresentationPart;
+
+                    // Verify that the presentation part and presentation exist.
+                    if (presentationPart != null && presentationPart.Presentation != null)
+                    {
+                        // Get the Presentation object from the presentation part.
+                        Presentation presentation = presentationPart.Presentation;
+
+                        // Verify that the slide ID list exists.
+                        if (presentation.SlideIdList != null)
+                        {
+                            // Get the collection of slide IDs from the slide ID list.
+                            var slideIds = presentation.SlideIdList.ChildElements;
+
+                            foreach (SlideId sld in slideIds)
+                            {
+                                string slidePartRelationshipId = sld.RelationshipId;
+
+                                // Get the specified slide part from the relationship ID.
+                                SlidePart slidePart = (SlidePart)presentationPart.GetPartById(slidePartRelationshipId);
+
+                                // Pass the slide part to the next method, and
+                                // then return the array of strings that method
+                                // returns to the previous method.
+                                slides.Add(sld.Id, GetSlideNotes(slidePart) ?? new string[] { });
+                            }
+                        }
+                    }
+                }
+                return slides;
+            }
+            catch (OpenXmlPackageException e)
+            {
+                if (e.ToString().Contains("Invalid Hyperlink"))
+                {
+                    using (FileStream fs = new FileStream(presentationFile, FileMode.OpenOrCreate, FileAccess.ReadWrite))
+                    {
+                        UriFixer.FixInvalidUri(fs, brokenUri => FixUri(brokenUri));
+                    }
+                    return GetTextOnSlides(presentationFile);
+                }
+                throw e;
+            }
+        }
+
         public static Dictionary<uint, string[]> GetImagesOnSlides(string presentationFile)
         {
             var slides = new Dictionary<uint, string[]>();
@@ -446,6 +531,55 @@ example for files:
                     {
                         // Add each paragraph to the linked list.
                         texts.AddLast(paragraphText.ToString().Trim().ToLower());
+                    }
+                }
+            }
+
+            if (texts.Count > 0)
+            {
+                // Return an array of strings.
+                return texts.ToArray();
+            }
+            else
+            {
+                return null;
+            }
+        }
+
+        public static string[] GetSlideNotes(SlidePart slidePart)
+        {
+            LinkedList<string> texts = new LinkedList<string>();
+            // Verify that the slide part exists.
+            if (slidePart == null)
+            {
+                throw new ArgumentNullException("slidePart");
+            }
+
+            if (slidePart.NotesSlidePart != null && slidePart.NotesSlidePart.NotesSlide != null)
+            {
+                foreach (Shape sp in slidePart.NotesSlidePart.NotesSlide.CommonSlideData.ShapeTree.Descendants<Shape>())
+                {
+                    if (sp.NonVisualShapeProperties.NonVisualDrawingProperties.Name.Value.StartsWith("Notes Placeholder"))
+                    {
+
+                        foreach (var paragraph in sp.Descendants<DocumentFormat.OpenXml.Drawing.Paragraph>())
+                        {
+                            // Create a new string builder.      
+                            StringBuilder paragraphText = new StringBuilder();
+
+                            // Iterate through the lines of the paragraph.
+                            foreach (var txt in paragraph.Descendants<DocumentFormat.OpenXml.Drawing.Text>())
+                            {
+                                // Append each line to the previous lines.
+                                paragraphText.Append(txt.Text);
+                            }
+
+                            if (paragraphText.Length > 0)
+                            {
+                                // Add each paragraph to the linked list.
+                                texts.AddLast(paragraphText.ToString().Trim().ToLower());
+                            }
+                        }
                     }
                 }
             }
