@@ -5,7 +5,6 @@ using System.Text;
 using DocumentFormat.OpenXml.Presentation;
 using DocumentFormat.OpenXml.Packaging;
 using System.IO;
-using System.IO.Compression;
 using Newtonsoft.Json;
 using System.Xml.Linq;
 using System.Xml;
@@ -15,6 +14,7 @@ using DocumentFormat.OpenXml.Bibliography;
 using System.Text.RegularExpressions;
 using System.Configuration;
 using DocumentFormat.OpenXml;
+using System.IO.Compression;
 
 namespace PPT_Compare
 {
